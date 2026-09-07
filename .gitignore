@@ -133,3 +133,5 @@ dist
 # macOS...
 .DS_Store
 ._*
+
+providers/darwin/.dev/

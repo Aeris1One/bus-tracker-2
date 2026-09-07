@@ -9,6 +9,7 @@ packages:
   - providers/hawk
   - providers/twisto
   - providers/rtm
+  - providers/darwin
 
 allowBuilds:
   '@posthog/cli': true
