@@ -4,7 +4,13 @@
 import "dotenv/config";
 
 import { setTimeout } from "node:timers/promises";
-import { captureException, initMonitoring, shutdownMonitoring } from "@bus-tracker/monitoring";
+import {
+	captureEvent,
+	captureException,
+	initMonitoring,
+	recordCycle,
+	shutdownMonitoring,
+} from "@bus-tracker/monitoring";
 import { createClient } from "redis";
 
 import { createObjectStore } from "./bucket/object-store.js";
@@ -29,6 +35,7 @@ const configuration = await loadConfiguration(configurationPath);
 
 // 2. Télémétrie
 initMonitoring(`processor-darwin:${configuration.id}`);
+captureEvent("provider_started", { nodeVersion: process.version, buildHash: process.env.BUILD_HASH });
 
 // 3. Connexion Redis
 logger.step("connexion à Redis.");
@@ -111,10 +118,13 @@ while (!stopping) {
 
 	// Publication, watchdog de 30 s
 	const cycleStartedAtMs = Date.now();
+	let cycleResult = { publishedCount: 0, errorCount: 0 };
 	try {
 		let timedOut = false;
 		await Promise.race([
-			runPublishCycle(context),
+			runPublishCycle(context).then((result) => {
+				cycleResult = result;
+			}),
 			setTimeout(PUBLISH_WATCHDOG_MS).then(() => {
 				timedOut = true;
 			}),
@@ -132,6 +142,7 @@ while (!stopping) {
 		captureException(error);
 	}
 	const cycleDurationMs = Date.now() - cycleStartedAtMs;
+	recordCycle({ durationMs: cycleDurationMs, published: cycleResult.publishedCount, errors: cycleResult.errorCount });
 
 	// Contrôle qualité des tracés
 	checkShapeQuality(context.counters);
@@ -143,6 +154,5 @@ while (!stopping) {
 	logger.step("cycle terminé en %d ms, attente de %d ms.", cycleDurationMs, waitMs);
 	try {
 		await setTimeout(waitMs);
-	} catch {
-	}
+	} catch {}
 }

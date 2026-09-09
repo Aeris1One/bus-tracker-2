@@ -7,7 +7,9 @@ import type { Shape } from "../domain/shape.js";
 import { buildJourney } from "../publish/build-journey.js";
 import { logger } from "../utils/logger.js";
 
-export async function runPublishCycle(context: ProviderContext): Promise<void> {
+export async function runPublishCycle(
+	context: ProviderContext,
+): Promise<{ publishedCount: number; errorCount: number }> {
 	const nowMs = Date.now();
 
 	const journeys: VehicleJourney[] = [];
@@ -55,4 +57,6 @@ export async function runPublishCycle(context: ProviderContext): Promise<void> {
 		buildErrors,
 		rejectedByValidation,
 	);
+
+	return { publishedCount, errorCount: buildErrors };
 }
