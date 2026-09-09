@@ -16,68 +16,78 @@ export type CallBuildContext = {
 	suppressDistances: boolean;
 };
 
+type AimedPair = { departure: number | undefined; arrival?: number | undefined };
+
 /**
- * Les cinq heures théoriques d'un point, dans l'ordre de priorité applicable à sa nature (voyageur
- * ou non) et à sa position dans la liste (`isLast`) : horaire publique avant technique pour un point
- * voyageur, l'inverse pour un point technique ; arrivée avant départ pour le dernier point,
- * l'inverse pour tous les autres.
+ * Couples {départ, arrivée théorique} d'un point, dans l'ordre de priorité applicable à sa nature
+ * (voyageur ou non) et à sa position dans la liste (`isLast`) : horaire public avant technique pour un
+ * point voyageur, l'inverse pour un point technique ; on part de l'arrivée pour le dernier point du
+ * train, du départ pour tous les autres.
  */
-function priorityTimes(call: Call, passengerCall: boolean, isLast: boolean): (number | undefined)[] {
+function priorityPairs(call: Call, passengerCall: boolean, isLast: boolean): AimedPair[] {
 	if (passengerCall) {
 		return isLast
 			? [
-					call.aimedPublicArrival,
-					call.aimedPublicDeparture,
-					call.aimedWorkingArrival,
-					call.aimedWorkingDeparture,
-					call.aimedWorkingPass,
+					{ departure: call.aimedPublicArrival },
+					{ departure: call.aimedPublicDeparture },
+					{ departure: call.aimedWorkingArrival },
+					{ departure: call.aimedWorkingDeparture },
+					{ departure: call.aimedWorkingPass },
 				]
 			: [
-					call.aimedPublicDeparture,
-					call.aimedPublicArrival,
-					call.aimedWorkingDeparture,
-					call.aimedWorkingArrival,
-					call.aimedWorkingPass,
+					{ departure: call.aimedPublicDeparture, arrival: call.aimedPublicArrival },
+					{ departure: call.aimedPublicArrival },
+					{ departure: call.aimedWorkingDeparture, arrival: call.aimedWorkingArrival },
+					{ departure: call.aimedWorkingArrival },
+					{ departure: call.aimedWorkingPass },
 				];
 	}
 	return isLast
 		? [
-				call.aimedWorkingArrival,
-				call.aimedWorkingDeparture,
-				call.aimedWorkingPass,
-				call.aimedPublicArrival,
-				call.aimedPublicDeparture,
+				{ departure: call.aimedWorkingArrival },
+				{ departure: call.aimedWorkingDeparture },
+				{ departure: call.aimedWorkingPass },
+				{ departure: call.aimedPublicArrival },
+				{ departure: call.aimedPublicDeparture },
 			]
 		: [
-				call.aimedWorkingDeparture,
-				call.aimedWorkingArrival,
-				call.aimedWorkingPass,
-				call.aimedPublicDeparture,
-				call.aimedPublicArrival,
+				{ departure: call.aimedWorkingDeparture, arrival: call.aimedWorkingArrival },
+				{ departure: call.aimedWorkingArrival },
+				{ departure: call.aimedWorkingPass },
+				{ departure: call.aimedPublicDeparture, arrival: call.aimedPublicArrival },
+				{ departure: call.aimedPublicArrival },
 			];
 }
 
 /**
- * Heure théorique retenue, ou `undefined` si aucune des cinq n'est résoluble.
+ * Couple théorique retenu, ou `undefined` si aucun des cinq départs n'est résoluble. `arrival` n'est
+ * présente que si le couple choisi en porte une (voir `priorityPairs`).
  */
-function resolveAimedTime(call: Call, isLast: boolean): number | undefined {
-	for (const candidate of priorityTimes(call, isPassengerTag(call.tag), isLast)) {
-		if (candidate !== undefined) {
-			return candidate;
+function resolveAimedPair(call: Call, isLast: boolean): { departure: number; arrival: number | undefined } | undefined {
+	for (const pair of priorityPairs(call, isPassengerTag(call.tag), isLast)) {
+		if (pair.departure !== undefined) {
+			return { departure: pair.departure, arrival: pair.arrival };
 		}
 	}
 	return undefined;
 }
 
 /**
- * Heure prévue, facultative : arrivée si `isLast`, départ sinon ; à défaut, heure technique
+ * Heure temps-réel, facultative : arrivée si `isLast`, départ sinon ; à défaut, heure technique
  * prévue (pour les PP).
  */
 function resolveExpectedTime(call: Call, isLast: boolean): number | undefined {
 	const primary = isLast
-		? (call.expectedArrival ?? call.actualArrival)
-		: (call.expectedDeparture ?? call.actualDeparture);
+		? (call.actualArrival ?? call.expectedArrival)
+		: (call.actualDeparture ?? call.expectedDeparture);
 	return primary ?? call.expectedWorking;
+}
+
+/**
+ * Arrivée temps réel
+ */
+function resolveExpectedArrival(call: Call): number | undefined {
+	return call.actualArrival ?? call.expectedArrival;
 }
 
 /** En ECS on ajoute systématiquement les flags */
@@ -93,25 +103,37 @@ function buildOneCall(
 	call: Call,
 	regime: Regime,
 	isLast: boolean,
-	aimedTimeMs: number,
+	aimedPair: { departure: number; arrival: number | undefined },
 	context: CallBuildContext,
 ): VehicleJourneyCall {
+	const departureMs = aimedPair.departure;
+	const arrivalMs = aimedPair.arrival;
 	const coordinates = context.coordinatesOf(call.tiploc);
 	const flags = resolveFlags(call, regime);
 	const expectedTimeMs = resolveExpectedTime(call, isLast);
+	const expectedArrivalMs = resolveExpectedArrival(call);
 	const distance =
 		context.activeShape !== undefined && !context.suppressDistances
 			? context.activeShape.distanceByCallOrder.get(call.order)
 			: undefined;
 
+	const aimedOk = !isLast && arrivalMs !== undefined && arrivalMs <= departureMs;
+	const expectedOk =
+		aimedOk && expectedArrivalMs !== undefined && expectedTimeMs !== undefined && expectedArrivalMs <= expectedTimeMs;
+	const dwelling = aimedOk && (arrivalMs !== departureMs || (expectedOk && expectedArrivalMs !== expectedTimeMs));
+
 	return {
 		stopRef: `${STOP_REF_PREFIX}:${call.tiploc}`,
 		stopName: context.placeName(call.tiploc),
 		stopOrder: call.order,
-		aimedTime: new Date(aimedTimeMs).toISOString(),
+		aimedTime: new Date(departureMs).toISOString(),
 		callStatus: call.cancelled ? "SKIPPED" : "SCHEDULED",
 		// Pas de clé `undefined`.
 		...(expectedTimeMs !== undefined ? { expectedTime: new Date(expectedTimeMs).toISOString() } : {}),
+		...(dwelling && arrivalMs !== undefined ? { aimedArrivalTime: new Date(arrivalMs).toISOString() } : {}),
+		...(dwelling && expectedOk && expectedArrivalMs !== undefined
+			? { expectedArrivalTime: new Date(expectedArrivalMs).toISOString() }
+			: {}),
 		...(call.platform !== undefined && !isPlatformHidden(call) ? { platformName: call.platform } : {}),
 		...(coordinates !== undefined ? { latitude: coordinates.latitude, longitude: coordinates.longitude } : {}),
 		...(flags.length > 0 ? { flags } : {}),
@@ -140,12 +162,12 @@ export function buildCalls(
 	let omitted = 0;
 	for (const call of selected) {
 		const isLast = call === lastSelected;
-		const aimedTimeMs = resolveAimedTime(call, isLast);
-		if (aimedTimeMs === undefined) {
+		const aimedPair = resolveAimedPair(call, isLast);
+		if (aimedPair === undefined) {
 			omitted++;
 			continue;
 		}
-		calls.push(buildOneCall(call, regime, isLast, aimedTimeMs, context));
+		calls.push(buildOneCall(call, regime, isLast, aimedPair, context));
 	}
 	return { calls, omitted };
 }

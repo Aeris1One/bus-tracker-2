@@ -271,6 +271,169 @@ describe("buildCalls — heure prévue facultative", () => {
 	});
 });
 
+describe("buildCalls — stationnement (heures d'arrivée)", () => {
+	it("point non dernier avec arrivée et départ publics distincts : les deux sont publiés", () => {
+		const calls = [
+			makeCall("OR", 0, { aimedPublicArrival: 1_000, aimedPublicDeparture: 1_200 }),
+			makeCall("DT", 1, { aimedPublicArrival: 2_000 }),
+		];
+		const { calls: published } = buildCalls(calls, "PASSENGER", baseContext());
+		expect(published[0]?.aimedTime).toBe(new Date(1_200).toISOString());
+		expect(published[0]?.aimedArrivalTime).toBe(new Date(1_000).toISOString());
+	});
+
+	it("terminus : aucune arrivée publiée séparément, même avec un départ et une arrivée publics distincts", () => {
+		const calls = [
+			makeCall("OR", 0, { aimedPublicDeparture: 1_000 }),
+			makeCall("DT", 1, { aimedPublicArrival: 2_000, aimedPublicDeparture: 2_200 }),
+		];
+		const { calls: published } = buildCalls(calls, "PASSENGER", baseContext());
+		const terminus = published[1];
+		expect(terminus?.aimedTime).toBe(new Date(2_000).toISOString());
+		expect(terminus !== undefined && "aimedArrivalTime" in terminus).toBe(false);
+	});
+
+	it("origine (aucune arrivée publique) : aucune clé d'arrivée publiée", () => {
+		const calls = [
+			makeCall("OR", 0, { aimedPublicDeparture: 1_000 }),
+			makeCall("DT", 1, { aimedPublicArrival: 2_000 }),
+		];
+		const { calls: published } = buildCalls(calls, "PASSENGER", baseContext());
+		const origin = published[0];
+		expect(origin !== undefined && "aimedArrivalTime" in origin).toBe(false);
+	});
+
+	it("arrivée publique égale au départ public, sans temps réel : aucune clé d'arrivée publiée", () => {
+		const calls = [
+			makeCall("OR", 0, { aimedPublicArrival: 1_000, aimedPublicDeparture: 1_000 }),
+			makeCall("DT", 1, { aimedPublicArrival: 2_000 }),
+		];
+		const { calls: published } = buildCalls(calls, "PASSENGER", baseContext());
+		const call = published[0];
+		expect(call !== undefined && "aimedArrivalTime" in call).toBe(false);
+	});
+
+	it("cas UK : théorique confondu mais stationnement révélé par le temps réel", () => {
+		const calls = [
+			makeCall("OR", 0, {
+				aimedPublicArrival: 1_000,
+				aimedPublicDeparture: 1_000,
+				actualArrival: 1_000,
+				expectedDeparture: 1_200,
+			}),
+			makeCall("DT", 1, { aimedPublicArrival: 2_000 }),
+		];
+		const { calls: published } = buildCalls(calls, "PASSENGER", baseContext());
+		const call = published[0];
+		expect(call?.aimedArrivalTime).toBe(call?.aimedTime);
+		expect(call?.aimedArrivalTime).toBe(new Date(1_000).toISOString());
+		expect(call?.expectedArrivalTime).toBe(new Date(1_000).toISOString());
+	});
+
+	it("familles croisées : départ public et arrivée technique seule ⇒ aucune arrivée publiée", () => {
+		const calls = [
+			makeCall("OR", 0, { aimedPublicDeparture: 1_200, aimedWorkingArrival: 1_000 }),
+			makeCall("DT", 1, { aimedPublicArrival: 2_000 }),
+		];
+		const { calls: published } = buildCalls(calls, "PASSENGER", baseContext());
+		const call = published[0];
+		expect(call !== undefined && "aimedArrivalTime" in call).toBe(false);
+	});
+
+	it("ECS non dernier : arrivée technique appariée au départ technique", () => {
+		const calls = [
+			makeCall("OPIP", 0, { aimedWorkingArrival: 1_000, aimedWorkingDeparture: 1_200 }),
+			makeCall("OPIP", 1, { aimedWorkingPass: 9_999 }),
+		];
+		const { calls: published } = buildCalls(calls, "ECS", baseContext());
+		expect(published[0]?.aimedTime).toBe(new Date(1_200).toISOString());
+		expect(published[0]?.aimedArrivalTime).toBe(new Date(1_000).toISOString());
+	});
+
+	it("ECS non dernier, repli sur la paire publique : l'appariement suit le repli", () => {
+		const calls = [
+			makeCall("OPIP", 0, { aimedPublicArrival: 1_000, aimedPublicDeparture: 1_200 }),
+			makeCall("OPIP", 1, { aimedWorkingPass: 9_999 }),
+		];
+		const { calls: published } = buildCalls(calls, "ECS", baseContext());
+		expect(published[0]?.aimedTime).toBe(new Date(1_200).toISOString());
+		expect(published[0]?.aimedArrivalTime).toBe(new Date(1_000).toISOString());
+	});
+
+	it("arrivée réelle : `actualArrival` prime sur un `expectedArrival` périmé", () => {
+		const calls = [
+			makeCall("OR", 0, {
+				aimedPublicArrival: 1_000,
+				aimedPublicDeparture: 1_200,
+				expectedArrival: 1_900,
+				actualArrival: 1_000,
+				expectedDeparture: 1_200,
+			}),
+			makeCall("DT", 1, { aimedPublicArrival: 2_000 }),
+		];
+		const { calls: published } = buildCalls(calls, "PASSENGER", baseContext());
+		expect(published[0]?.expectedArrivalTime).toBe(new Date(1_000).toISOString());
+	});
+
+	it("`expectedArrival` sans `expectedTime` (ni départ ni technique prévus) : arrivée réelle omise", () => {
+		const calls = [
+			makeCall("OR", 0, { aimedPublicArrival: 1_000, aimedPublicDeparture: 1_200, expectedArrival: 1_000 }),
+			makeCall("DT", 1, { aimedPublicArrival: 2_000 }),
+		];
+		const { calls: published } = buildCalls(calls, "PASSENGER", baseContext());
+		const call = published[0];
+		expect(call?.aimedArrivalTime).toBe(new Date(1_000).toISOString());
+		expect(call !== undefined && "expectedArrivalTime" in call).toBe(false);
+	});
+
+	it("théorique incohérent (arrivée après départ) : rien de la paire n'est publié", () => {
+		const calls = [
+			makeCall("OR", 0, { aimedPublicArrival: 1_200, aimedPublicDeparture: 1_000 }),
+			makeCall("DT", 1, { aimedPublicArrival: 2_000 }),
+		];
+		const { calls: published } = buildCalls(calls, "PASSENGER", baseContext());
+		const call = published[0];
+		expect(call !== undefined && "aimedArrivalTime" in call).toBe(false);
+		expect(call !== undefined && "expectedArrivalTime" in call).toBe(false);
+	});
+
+	it("réel incohérent (arrivée réelle après départ prévu) : l'arrivée théorique reste, le réel tombe seul", () => {
+		const calls = [
+			makeCall("OR", 0, {
+				aimedPublicArrival: 1_000,
+				aimedPublicDeparture: 1_200,
+				actualArrival: 1_300,
+				expectedDeparture: 1_200,
+			}),
+			makeCall("DT", 1, { aimedPublicArrival: 2_000 }),
+		];
+		const { calls: published } = buildCalls(calls, "PASSENGER", baseContext());
+		const call = published[0];
+		expect(call?.aimedArrivalTime).toBe(new Date(1_000).toISOString());
+		expect(call !== undefined && "expectedArrivalTime" in call).toBe(false);
+	});
+
+	it("un point en stationnement ne porte jamais de valeur undefined, champ par champ", () => {
+		const calls = [
+			makeCall("OR", 0, {
+				aimedPublicArrival: 1_000,
+				aimedPublicDeparture: 1_200,
+				actualArrival: 1_000,
+				expectedDeparture: 1_200,
+			}),
+			makeCall("DT", 1, { aimedPublicArrival: 2_000 }),
+		];
+		const { calls: published } = buildCalls(calls, "PASSENGER", baseContext());
+		const call = published[0];
+		expect(call).toBeDefined();
+		expect(call?.aimedArrivalTime).toBeDefined();
+		expect(call?.expectedArrivalTime).toBeDefined();
+		for (const value of Object.values(call as object)) {
+			expect(value).not.toBeUndefined();
+		}
+	});
+});
+
 describe("buildCalls — statut, nom et quai", () => {
 	it("callStatus SKIPPED pour un point annulé, SCHEDULED sinon", () => {
 		const calls = [
