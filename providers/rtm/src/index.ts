@@ -1,6 +1,6 @@
 import { setTimeout } from "node:timers/promises";
 import type { VehicleJourney } from "@bus-tracker/contracts";
-import { initMonitoring } from "@bus-tracker/monitoring";
+import { captureEvent, captureException, initMonitoring, recordCycle } from "@bus-tracker/monitoring";
 import { createClient } from "redis";
 import { match, P } from "ts-pattern";
 
@@ -8,6 +8,7 @@ import { REFRESH_INTERVAL } from "./config.js";
 import { getLines, getVehicles, type Line } from "./data.js";
 
 initMonitoring("processor-rtm");
+captureEvent("provider_started", { nodeVersion: process.version, buildHash: process.env.BUILD_HASH });
 
 console.log("► Connecting to Redis.");
 const redis = createClient({
@@ -43,6 +44,8 @@ while (true) {
 		} catch (e) {
 			const waitingTime = Math.max(10_000, REFRESH_INTERVAL / 2 - (Date.now() - then));
 			console.error(`✘ Failed to update lines list! Waiting for ${waitingTime}ms.`, e);
+			captureException(e, { phase: "lines-refresh" });
+			recordCycle({ durationMs: Date.now() - then, published: 0, errors: 1 });
 			await setTimeout(waitingTime);
 		}
 
@@ -99,10 +102,13 @@ while (true) {
 		console.log(
 			`✓ Published ${vehicleJourneys.length} vehicles in ${Date.now() - then}ms! Waiting for ${waitingTime}ms.`,
 		);
+		recordCycle({ durationMs: Date.now() - then, published: vehicleJourneys.length, errors: 0 });
 		await setTimeout(waitingTime);
 	} catch (e) {
 		const waitingTime = Math.max(10_000, REFRESH_INTERVAL - (Date.now() - then));
 		console.error(`✘ Failed to fetch vehicles! Waiting for ${waitingTime}ms.`, e);
+		captureException(e, { phase: "vehicle-fetch" });
+		recordCycle({ durationMs: Date.now() - then, published: 0, errors: 1 });
 		await setTimeout(waitingTime);
 	}
 }

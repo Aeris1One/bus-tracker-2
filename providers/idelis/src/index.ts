@@ -1,12 +1,13 @@
 import { setTimeout } from "node:timers/promises";
 import type { VehicleJourney } from "@bus-tracker/contracts";
-import { initMonitoring } from "@bus-tracker/monitoring";
+import { captureEvent, captureException, initMonitoring, recordCycle } from "@bus-tracker/monitoring";
 import { createClient } from "redis";
 
 import { fetchVehicles } from "./fetch-vehicles.js";
 import { lines } from "./lines.js";
 
 initMonitoring("processor-idelis");
+captureEvent("provider_started", { nodeVersion: process.version, buildHash: process.env.BUILD_HASH });
 
 console.log("%s ► Connecting to Redis.", Temporal.Now.instant());
 const redis = createClient({
@@ -24,6 +25,10 @@ console.log(`► Connected! Journeys will be published into '${channel}'.`);
 console.log();
 
 while (true) {
+	let passDurationMs = 0;
+	let passPublished = 0;
+	let passErrors = 0;
+
 	for (const line of lines) {
 		const then = Date.now();
 		console.log(`► Fetching vehicles for line '${line.id}'...`);
@@ -85,9 +90,15 @@ while (true) {
 			console.log(
 				`✓ Published ${vehicleJourneys.length} vehicle journeys for line '${line.id}' in ${Date.now() - then}ms.`,
 			);
+			passPublished += vehicleJourneys.length;
 		} catch (e) {
 			console.error(`✘ Failed to fetch vehicle journeys for line '${line.id}':`, e);
+			captureException(e, { lineId: line.id, $exception_fingerprint: ["idelis-fetch-error", line.id] });
+			passErrors += 1;
 		}
+		passDurationMs += Date.now() - then;
 		await setTimeout(1500);
 	}
+
+	recordCycle({ durationMs: passDurationMs, published: passPublished, errors: passErrors });
 }

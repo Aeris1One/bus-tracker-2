@@ -1,6 +1,6 @@
 import { setTimeout } from "node:timers/promises";
 import type { VehicleJourney } from "@bus-tracker/contracts";
-import { initMonitoring } from "@bus-tracker/monitoring";
+import { captureEvent, initMonitoring, recordCycle } from "@bus-tracker/monitoring";
 import { createClient } from "redis";
 
 if (process.argv.length < 3) {
@@ -22,12 +22,15 @@ console.log();
 const [, , flowlyId, networkRef] = process.argv;
 
 initMonitoring(`processor-flowly:${flowlyId}`);
+captureEvent("provider_started", { nodeVersion: process.version, buildHash: process.env.BUILD_HASH });
 
 while (true) {
+	const cycleStartedAt = Date.now();
 	console.log("► Fetching vehicles from Flowly...");
 
 	const response = await fetch(`https://${flowlyId}.flowly.re/Portal/MapDevices.aspx`);
 	if (!response.ok) {
+		recordCycle({ durationMs: Date.now() - cycleStartedAt, published: 0, errors: 1 });
 		await setTimeout(5000);
 		continue;
 	}
@@ -98,5 +101,6 @@ while (true) {
 
 	await redis.publish(channel, JSON.stringify(vehicleJourneys));
 	console.log(`✓ Published ${vehicleJourneys.length} vehicle journeys`);
+	recordCycle({ durationMs: Date.now() - cycleStartedAt, published: vehicleJourneys.length, errors: 0 });
 	await setTimeout(30_000);
 }

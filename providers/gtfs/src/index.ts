@@ -1,7 +1,7 @@
 import "dotenv";
 
 import { setTimeout } from "node:timers/promises";
-import { captureException, initMonitoring, shutdownMonitoring } from "@bus-tracker/monitoring";
+import { captureEvent, captureException, initMonitoring, recordCycle, shutdownMonitoring } from "@bus-tracker/monitoring";
 import { Cron } from "croner";
 import DraftLog from "draftlog";
 import pLimit from "p-limit";
@@ -28,6 +28,7 @@ console.log(` ,----.,--------.,------.,---.   ,------.
 const configuration = await loadConfiguration(configurationPath);
 
 initMonitoring(`processor-gtfs:${configuration.id}`);
+captureEvent("provider_started", { nodeVersion: process.version, buildHash: process.env.BUILD_HASH });
 
 console.log("%s ► Connecting to Redis.", Temporal.Now.instant());
 const redis = createClient({
@@ -69,11 +70,14 @@ while (true) {
 	}
 
 	const startedAt = Date.now();
+	let cycleResult = { publishedCount: 0, errorCount: 0 };
 	try {
 		let timedOut = false;
 
 		await Promise.race([
-			computeCurrentJourneys(),
+			computeCurrentJourneys().then((result) => {
+				cycleResult = result;
+			}),
 			(async () => {
 				await setTimeout(30_000);
 				timedOut = true;
@@ -91,6 +95,7 @@ while (true) {
 		captureException(e);
 	}
 	const computeDuration = Date.now() - startedAt;
+	recordCycle({ durationMs: computeDuration, published: cycleResult.publishedCount, errors: cycleResult.errorCount });
 
 	await publishDataSourceManifests(redis, configuration.id, configuration.sources);
 
@@ -102,7 +107,7 @@ while (true) {
 	} catch {}
 }
 
-async function computeCurrentJourneys() {
+async function computeCurrentJourneys(): Promise<{ publishedCount: number; errorCount: number }> {
 	const watch = createStopWatch();
 
 	const computeLimit = 6;
@@ -137,10 +142,12 @@ async function computeCurrentJourneys() {
 		);
 
 		let computedJourneyCount = 0;
+		let errorCount = 0;
 		for (const computationResult of computationResults) {
 			if (computationResult.status === "rejected") {
 				console.error(computationResult.reason);
 				captureException(computationResult.reason);
+				errorCount += 1;
 				continue;
 			}
 			computedJourneyCount += computationResult.value;
@@ -152,6 +159,9 @@ async function computeCurrentJourneys() {
 			computedJourneyCount,
 			watch.total(),
 		);
+
+		console.log();
+		return { publishedCount: computedJourneyCount, errorCount };
 	} catch (e) {
 		updateLog("%s ✘ Something wrong occurred while publishing vehicle journeys.", Temporal.Now.instant());
 		console.error(e);
@@ -159,6 +169,7 @@ async function computeCurrentJourneys() {
 	}
 
 	console.log();
+	return { publishedCount: 0, errorCount: 1 };
 }
 
 async function publishLinePaths(sources: typeof configuration.sources) {

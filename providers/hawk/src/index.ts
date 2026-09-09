@@ -1,6 +1,6 @@
 import { setTimeout } from "node:timers/promises";
 import type { VehicleJourney } from "@bus-tracker/contracts";
-import { initMonitoring } from "@bus-tracker/monitoring";
+import { captureEvent, captureException, initMonitoring, recordCycle } from "@bus-tracker/monitoring";
 import dayjs from "dayjs";
 import customParseFormatPlugin from "dayjs/plugin/customParseFormat.js";
 import timezonePlugin from "dayjs/plugin/timezone.js";
@@ -24,6 +24,7 @@ const destinationRegex = /(?:{RunDestination}:|Destination:)\s*([^<\n]+)/i;
 const lastLocRegex = /(?:{LastLoc}:|Dernière position:)\s*([\d]{2}\/[\d]{2}\/[\d]{4} [\d]{2}:[\d]{2}:[\d]{2})/i;
 
 initMonitoring(`processor-hawk:${HAWK_ID}`);
+captureEvent("provider_started", { nodeVersion: process.version, buildHash: process.env.BUILD_HASH });
 
 console.log("► Connecting to Redis.");
 const redis = createClient({
@@ -41,71 +42,81 @@ console.log(`► Connected! Journeys will be published into '${channel}'.`);
 console.log();
 
 while (true) {
+	const cycleStartedAt = Date.now();
 	console.log(`► Fetching vehicles from Hawk <${HAWK_ID}>...`);
-	const response = await fetch(
-		`https://hawk.hanoverdisplays.com/${HAWK_ID}/api/vehicles/poi?info=${INFO_TOKEN}&isSAEIVMode=true&culture=fr-FR&hasOperator=false&hasTransporter=false&isUsingMetricSystem=true&hasCapacity=false&userId=1&driverInfo=1&ShowAssignedOnly=false&assignment_state_exists=false&vehicle_phone_number_exists=true`,
-	);
-	if (!response.ok) {
-		console.error(`✘ Failed to fetch data from Hawk (status ${response.status}).`);
-		await setTimeout(5000);
-		continue;
+	try {
+		const response = await fetch(
+			`https://hawk.hanoverdisplays.com/${HAWK_ID}/api/vehicles/poi?info=${INFO_TOKEN}&isSAEIVMode=true&culture=fr-FR&hasOperator=false&hasTransporter=false&isUsingMetricSystem=true&hasCapacity=false&userId=1&driverInfo=1&ShowAssignedOnly=false&assignment_state_exists=false&vehicle_phone_number_exists=true`,
+		);
+		if (!response.ok) {
+			console.error(`✘ Failed to fetch data from Hawk (status ${response.status}).`);
+			captureException(new Error(`Failed to fetch data from Hawk (status ${response.status})`), { hawkId: HAWK_ID });
+			recordCycle({ durationMs: Date.now() - cycleStartedAt, published: 0, errors: 1 });
+			await setTimeout(5000);
+			continue;
+		}
+
+		const now = Temporal.Now.instant();
+
+		const vehicles = (await response.json()) as Vehicle[];
+
+		const vehicleJourneys = vehicles.flatMap((vehicle) => {
+			if (vehicle.PopUpText.includes("Eteint") || vehicle.PopUpText.includes("SwitchedOff")) {
+				console.log(`\t⛛ ${vehicle.ParcNumber} > OFF`);
+				return [];
+			}
+
+			const lineResult = lineRegex.exec(vehicle.PopUpText);
+			const destinationResult = destinationRegex.exec(vehicle.PopUpText);
+			const lastLocResult = lastLocRegex.exec(vehicle.PopUpText);
+			if (lineResult === null || destinationResult === null || lastLocResult === null) {
+				console.log(`\t✘ ${vehicle.ParcNumber} > Failed to extract info ("${vehicle.PopUpText}")`);
+				return [];
+			}
+
+			const [, line] = lineResult;
+			const [, destination] = destinationResult;
+			const [, lastPositionAt] = lastLocResult;
+			console.log(`\t⛛ ${vehicle.ParcNumber} OK (LIGNE:${line} / DEST:${destination} / LAST POS.:${lastPositionAt})`);
+
+			const lastPositionAtDate = dayjs.tz(lastPositionAt, "DD/MM/YYYY HH:mm:ss", "Europe/Paris").toDate();
+
+			if (Date.now() - lastPositionAtDate.getTime() > 10 * 60_000) return [];
+
+			return {
+				id: `${NETWORK_REF}:${OPERATOR_REF ?? ""}:VehicleTracking:${vehicle.ParcNumber}`,
+				line: {
+					ref: `${NETWORK_REF}:Line:${line ?? "?"}`,
+					number: line ?? "?",
+					type: "BUS",
+					color: "FFFFFF",
+					textColor: "000000",
+				},
+				destination,
+				position: {
+					latitude: +vehicle.Latitude,
+					longitude: +vehicle.Longitude,
+					atStop: false,
+					type: "GPS",
+					recordedAt: Temporal.Instant.fromEpochMilliseconds(lastPositionAtDate.getTime())
+						.toZonedDateTimeISO("Europe/Paris")
+						.toString({ timeZoneName: "never" }),
+				},
+				networkRef: NETWORK_REF,
+				operatorRef: OPERATOR_REF,
+				vehicleRef: `${NETWORK_REF}:${OPERATOR_REF ?? ""}:Vehicle:${vehicle.ParcNumber}`,
+				updatedAt: now.toString(),
+			} satisfies VehicleJourney;
+		});
+
+		await redis.publish("journeys", JSON.stringify(vehicleJourneys));
+		console.log(`✓ Published ${vehicleJourneys.length} vehicle journeys`);
+		console.log();
+		recordCycle({ durationMs: Date.now() - cycleStartedAt, published: vehicleJourneys.length, errors: 0 });
+	} catch (e) {
+		console.error(`✘ Failed to fetch/publish vehicles from Hawk <${HAWK_ID}>`, e);
+		captureException(e, { hawkId: HAWK_ID });
+		recordCycle({ durationMs: Date.now() - cycleStartedAt, published: 0, errors: 1 });
 	}
-
-	const now = Temporal.Now.instant();
-
-	const vehicles = (await response.json()) as Vehicle[];
-
-	const vehicleJourneys = vehicles.flatMap((vehicle) => {
-		if (vehicle.PopUpText.includes("Eteint") || vehicle.PopUpText.includes("SwitchedOff")) {
-			console.log(`\t⛛ ${vehicle.ParcNumber} > OFF`);
-			return [];
-		}
-
-		const lineResult = lineRegex.exec(vehicle.PopUpText);
-		const destinationResult = destinationRegex.exec(vehicle.PopUpText);
-		const lastLocResult = lastLocRegex.exec(vehicle.PopUpText);
-		if (lineResult === null || destinationResult === null || lastLocResult === null) {
-			console.log(`\t✘ ${vehicle.ParcNumber} > Failed to extract info ("${vehicle.PopUpText}")`);
-			return [];
-		}
-
-		const [, line] = lineResult;
-		const [, destination] = destinationResult;
-		const [, lastPositionAt] = lastLocResult;
-		console.log(`\t⛛ ${vehicle.ParcNumber} OK (LIGNE:${line} / DEST:${destination} / LAST POS.:${lastPositionAt})`);
-
-		const lastPositionAtDate = dayjs.tz(lastPositionAt, "DD/MM/YYYY HH:mm:ss", "Europe/Paris").toDate();
-
-		if (Date.now() - lastPositionAtDate.getTime() > 10 * 60_000) return [];
-
-		return {
-			id: `${NETWORK_REF}:${OPERATOR_REF ?? ""}:VehicleTracking:${vehicle.ParcNumber}`,
-			line: {
-				ref: `${NETWORK_REF}:Line:${line ?? "?"}`,
-				number: line ?? "?",
-				type: "BUS",
-				color: "FFFFFF",
-				textColor: "000000",
-			},
-			destination,
-			position: {
-				latitude: +vehicle.Latitude,
-				longitude: +vehicle.Longitude,
-				atStop: false,
-				type: "GPS",
-				recordedAt: Temporal.Instant.fromEpochMilliseconds(lastPositionAtDate.getTime())
-					.toZonedDateTimeISO("Europe/Paris")
-					.toString({ timeZoneName: "never" }),
-			},
-			networkRef: NETWORK_REF,
-			operatorRef: OPERATOR_REF,
-			vehicleRef: `${NETWORK_REF}:${OPERATOR_REF ?? ""}:Vehicle:${vehicle.ParcNumber}`,
-			updatedAt: now.toString(),
-		} satisfies VehicleJourney;
-	});
-
-	await redis.publish("journeys", JSON.stringify(vehicleJourneys));
-	console.log(`✓ Published ${vehicleJourneys.length} vehicle journeys`);
-	console.log();
 	await setTimeout(30_000);
 }

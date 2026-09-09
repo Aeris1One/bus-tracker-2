@@ -1,11 +1,12 @@
 import { setTimeout } from "node:timers/promises";
-import { captureException, initMonitoring } from "@bus-tracker/monitoring";
+import { captureEvent, captureException, initMonitoring, recordCycle } from "@bus-tracker/monitoring";
 import { createClient } from "redis";
 
 import { fetchMonitoredLines } from "./jobs/fetch-monitored-lines.js";
 import { fetchMonitoredVehicles } from "./jobs/fetch-monitored-vehicles.js";
 
 initMonitoring("processor-twisto");
+captureEvent("provider_started", { nodeVersion: process.version, buildHash: process.env.BUILD_HASH });
 
 console.log("%s ► Connecting to Redis.", Temporal.Now.instant());
 const redis = createClient({
@@ -26,6 +27,8 @@ let monitoredLines: string[] = [];
 let lastMonitoredLinesUpdate: number | undefined;
 
 while (true) {
+	const cycleStartedAt = Date.now();
+
 	if (lastMonitoredLinesUpdate === undefined || Date.now() - lastMonitoredLinesUpdate > 7200_000) {
 		console.log("%s ► Fetching monitored lines.", Temporal.Now.instant());
 		try {
@@ -35,6 +38,7 @@ while (true) {
 		} catch (cause) {
 			console.error("%s ✘ Failed to update monitored lines", Temporal.Now.instant(), cause);
 			captureException(cause);
+			recordCycle({ durationMs: Date.now() - cycleStartedAt, published: 0, errors: 1 });
 		}
 		await setTimeout(60_000);
 
@@ -48,5 +52,6 @@ while (true) {
 	const vehicleJourneys = await fetchMonitoredVehicles(monitoredLines);
 	await redis.publish(channel, JSON.stringify(vehicleJourneys));
 	console.log("%s ✓ Sent %d vehicle journeys.", Temporal.Now.instant(), vehicleJourneys.length);
+	recordCycle({ durationMs: Date.now() - cycleStartedAt, published: vehicleJourneys.length, errors: 0 });
 	await setTimeout(60_000);
 }
