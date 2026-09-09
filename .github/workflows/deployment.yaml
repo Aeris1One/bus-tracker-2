@@ -95,7 +95,7 @@ jobs:
 
     strategy:
       matrix:
-        component: ['flowly', 'gtfs', 'hawk', 'idelis', 'rtm', 'twisto']
+        component: ['flowly', 'gtfs', 'hawk', 'idelis', 'rtm', 'twisto', 'darwin']
 
     steps:
       - name: Checkout repository
