@@ -108,6 +108,11 @@ describe("evaluateTrain — les sept motifs de rejet", () => {
 		expect("rejectedBecause" in result).toBe(false);
 	});
 
+	it("TOO_EARLY — un ECS n'a pas d'heure publique mais reste rejeté via son heure de travail", () => {
+		const train = makeTrain([makeCall({ order: 0, aimedWorkingDeparture: NOW + 700_000 })]);
+		expect(evaluateTrain(train, NOW, OPTIONS, alwaysLocatable)).toEqual({ rejectedBecause: "TOO_EARLY" });
+	});
+
 	it("un train déjà parti n'est jamais rejeté par la fenêtre avant départ", () => {
 		// Heure théorique de départ largement dépassée : le train a déjà quitté son origine.
 		const train = makeTrain([
