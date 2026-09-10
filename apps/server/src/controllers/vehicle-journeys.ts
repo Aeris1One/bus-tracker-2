@@ -1,3 +1,4 @@
+import { getPositionType } from "@bus-tracker/contracts";
 import { eq, inArray } from "drizzle-orm";
 import * as z from "zod";
 
@@ -7,7 +8,6 @@ import { findGirouette } from "../core/services/girouette-service.js";
 import { journeyStore } from "../core/store/journey-store.js";
 import { redis } from "../index.js";
 import { hono } from "../server.js";
-import type { DisposeableVehicleJourney } from "../types/disposeable-vehicle-journey.js";
 import { keyBy } from "../utils/key-by.js";
 import { createParamValidator, createQueryValidator } from "../utils/validator-helpers.js";
 
@@ -38,11 +38,6 @@ const getVehicleJourneyMarkersQuery = z.object({
 		.optional()
 		.transform((values) => (typeof values === "number" ? [values] : values)),
 });
-
-const getPositionType = (journey: DisposeableVehicleJourney) => {
-	if (journey.position.type === "GPS") return "GPS";
-	return journey.calls?.some((call) => call.expectedTime !== undefined) ? "ESTIMATED" : "SCHEDULED";
-};
 
 hono.get("/vehicle-journeys/markers", createQueryValidator(getVehicleJourneyMarkersQuery), async (c) => {
 	const {

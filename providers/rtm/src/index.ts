@@ -1,6 +1,13 @@
 import { setTimeout } from "node:timers/promises";
 import type { VehicleJourney } from "@bus-tracker/contracts";
-import { captureEvent, captureException, initMonitoring, recordCycle } from "@bus-tracker/monitoring";
+import {
+	captureEvent,
+	captureException,
+	countPositionTypes,
+	emptyPositionTypeCounts,
+	initMonitoring,
+	recordCycle,
+} from "@bus-tracker/monitoring";
 import { createClient } from "redis";
 import { match, P } from "ts-pattern";
 
@@ -40,12 +47,23 @@ while (true) {
 
 			const waitingTime = Math.max(10_000, REFRESH_INTERVAL / 2 - (Date.now() - then));
 			console.log(`✓ Updated list with ${lines.length} lines! Waiting for ${waitingTime}ms.`);
+			recordCycle({
+				durationMs: Date.now() - then,
+				published: emptyPositionTypeCounts(),
+				errors: 0,
+				phase: "lines-refresh",
+			});
 			await setTimeout(waitingTime);
 		} catch (e) {
 			const waitingTime = Math.max(10_000, REFRESH_INTERVAL / 2 - (Date.now() - then));
 			console.error(`✘ Failed to update lines list! Waiting for ${waitingTime}ms.`, e);
 			captureException(e, { phase: "lines-refresh" });
-			recordCycle({ durationMs: Date.now() - then, published: 0, errors: 1 });
+			recordCycle({
+				durationMs: Date.now() - then,
+				published: emptyPositionTypeCounts(),
+				errors: 1,
+				phase: "lines-refresh",
+			});
 			await setTimeout(waitingTime);
 		}
 
@@ -102,13 +120,13 @@ while (true) {
 		console.log(
 			`✓ Published ${vehicleJourneys.length} vehicles in ${Date.now() - then}ms! Waiting for ${waitingTime}ms.`,
 		);
-		recordCycle({ durationMs: Date.now() - then, published: vehicleJourneys.length, errors: 0 });
+		recordCycle({ durationMs: Date.now() - then, published: countPositionTypes(vehicleJourneys), errors: 0 });
 		await setTimeout(waitingTime);
 	} catch (e) {
 		const waitingTime = Math.max(10_000, REFRESH_INTERVAL - (Date.now() - then));
 		console.error(`✘ Failed to fetch vehicles! Waiting for ${waitingTime}ms.`, e);
 		captureException(e, { phase: "vehicle-fetch" });
-		recordCycle({ durationMs: Date.now() - then, published: 0, errors: 1 });
+		recordCycle({ durationMs: Date.now() - then, published: emptyPositionTypeCounts(), errors: 1 });
 		await setTimeout(waitingTime);
 	}
 }

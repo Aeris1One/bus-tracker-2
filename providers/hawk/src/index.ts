@@ -1,6 +1,13 @@
 import { setTimeout } from "node:timers/promises";
 import type { VehicleJourney } from "@bus-tracker/contracts";
-import { captureEvent, captureException, initMonitoring, recordCycle } from "@bus-tracker/monitoring";
+import {
+	captureEvent,
+	captureException,
+	countPositionTypes,
+	emptyPositionTypeCounts,
+	initMonitoring,
+	recordCycle,
+} from "@bus-tracker/monitoring";
 import dayjs from "dayjs";
 import customParseFormatPlugin from "dayjs/plugin/customParseFormat.js";
 import timezonePlugin from "dayjs/plugin/timezone.js";
@@ -51,7 +58,7 @@ while (true) {
 		if (!response.ok) {
 			console.error(`✘ Failed to fetch data from Hawk (status ${response.status}).`);
 			captureException(new Error(`Failed to fetch data from Hawk (status ${response.status})`), { hawkId: HAWK_ID });
-			recordCycle({ durationMs: Date.now() - cycleStartedAt, published: 0, errors: 1 });
+			recordCycle({ durationMs: Date.now() - cycleStartedAt, published: emptyPositionTypeCounts(), errors: 1 });
 			await setTimeout(5000);
 			continue;
 		}
@@ -112,11 +119,15 @@ while (true) {
 		await redis.publish("journeys", JSON.stringify(vehicleJourneys));
 		console.log(`✓ Published ${vehicleJourneys.length} vehicle journeys`);
 		console.log();
-		recordCycle({ durationMs: Date.now() - cycleStartedAt, published: vehicleJourneys.length, errors: 0 });
+		recordCycle({
+			durationMs: Date.now() - cycleStartedAt,
+			published: countPositionTypes(vehicleJourneys),
+			errors: 0,
+		});
 	} catch (e) {
 		console.error(`✘ Failed to fetch/publish vehicles from Hawk <${HAWK_ID}>`, e);
 		captureException(e, { hawkId: HAWK_ID });
-		recordCycle({ durationMs: Date.now() - cycleStartedAt, published: 0, errors: 1 });
+		recordCycle({ durationMs: Date.now() - cycleStartedAt, published: emptyPositionTypeCounts(), errors: 1 });
 	}
 	await setTimeout(30_000);
 }

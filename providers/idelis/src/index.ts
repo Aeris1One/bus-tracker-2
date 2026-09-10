@@ -1,6 +1,14 @@
 import { setTimeout } from "node:timers/promises";
 import type { VehicleJourney } from "@bus-tracker/contracts";
-import { captureEvent, captureException, initMonitoring, recordCycle } from "@bus-tracker/monitoring";
+import {
+	addPositionTypeCounts,
+	captureEvent,
+	captureException,
+	countPositionTypes,
+	emptyPositionTypeCounts,
+	initMonitoring,
+	recordCycle,
+} from "@bus-tracker/monitoring";
 import { createClient } from "redis";
 
 import { fetchVehicles } from "./fetch-vehicles.js";
@@ -26,7 +34,7 @@ console.log();
 
 while (true) {
 	let passDurationMs = 0;
-	let passPublished = 0;
+	let passPublished = emptyPositionTypeCounts();
 	let passErrors = 0;
 
 	for (const line of lines) {
@@ -90,7 +98,7 @@ while (true) {
 			console.log(
 				`✓ Published ${vehicleJourneys.length} vehicle journeys for line '${line.id}' in ${Date.now() - then}ms.`,
 			);
-			passPublished += vehicleJourneys.length;
+			passPublished = addPositionTypeCounts(passPublished, countPositionTypes(vehicleJourneys));
 		} catch (e) {
 			console.error(`✘ Failed to fetch vehicle journeys for line '${line.id}':`, e);
 			captureException(e, { lineId: line.id, $exception_fingerprint: ["idelis-fetch-error", line.id] });

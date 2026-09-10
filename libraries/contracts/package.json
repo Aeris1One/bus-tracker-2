@@ -5,6 +5,10 @@
 		".": {
 			"types": "./dist/src/index.d.ts",
 			"default": "./dist/src/index.js"
+		},
+		"./position-type": {
+			"types": "./dist/src/position-type.d.ts",
+			"default": "./dist/src/position-type.js"
 		}
 	},
 	"private": true,

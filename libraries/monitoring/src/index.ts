@@ -1,145 +1,134 @@
-import { PostHog } from "posthog-node";
+import { setTimeout } from "node:timers/promises";
+import type { PostHog } from "posthog-node";
 
-/** After this many consecutive cycles publishing 0 entries, report it immediately (bypasses the health flush interval). */
-const ZERO_OUTPUT_THRESHOLD = 3;
-const DEFAULT_HEALTH_INTERVAL_MS = 180_000;
+import { createClient, installProcessHooks, type MonitoringConfig, readConfig } from "./client.js";
+import {
+	type CycleSample,
+	createZeroOutputTracker,
+	positionTypes,
+	totalPositionTypeCounts,
+	type ZeroOutputTracker,
+} from "./cycle.js";
+import { captureEventWith, captureExceptionWith } from "./events.js";
+import { createProcessSampler, type MetricAttributes, METRICS, Metrics, type ProcessSampler } from "./metrics.js";
 
-export type CycleSample = {
-	durationMs: number;
-	published: number;
-	errors: number;
-	timedOut?: boolean;
-	/** Merged into the next flushed `provider_health` event; last call before a flush wins. */
-	properties?: Record<string, unknown>;
+export {
+	addPositionTypeCounts,
+	type CycleOutcome,
+	type CycleSample,
+	countPositionTypes,
+	emptyPositionTypeCounts,
+	getPositionType,
+	type PositionType,
+	type PositionTypeCounts,
+	type PositionTypeInput,
+	positionTypes,
+	totalPositionTypeCounts,
+} from "./cycle.js";
+
+const FATAL_SHUTDOWN_TIMEOUT_MS = 5_000;
+
+type MonitoringState = {
+	config: MonitoringConfig;
+	posthog: PostHog | undefined;
+	metrics: Metrics;
+	sampler: ProcessSampler;
+	zeroOutput: ZeroOutputTracker;
+	uninstallHooks: () => void;
 };
 
-type HealthAggregate = {
-	cycles: number;
-	totalDurationMs: number;
-	maxDurationMs: number;
-	totalPublished: number;
-	totalErrors: number;
-	timeouts: number;
-	windowStartedAt: number;
-	properties: Record<string, unknown>;
-};
+let state: MonitoringState | undefined;
 
-let posthog: PostHog | undefined;
-let processorId = "unknown";
-let healthIntervalMs = DEFAULT_HEALTH_INTERVAL_MS;
-let aggregate = emptyAggregate();
-let hasPublishedBefore = false;
-let consecutiveZeroPublishedCycles = 0;
+export function initMonitoring(processorId: string): void {
+	// Initialiser qu'une fois
+	if (state !== undefined) return;
 
-function emptyAggregate(): HealthAggregate {
-	return {
-		cycles: 0,
-		totalDurationMs: 0,
-		maxDurationMs: 0,
-		totalPublished: 0,
-		totalErrors: 0,
-		timeouts: 0,
-		windowStartedAt: Date.now(),
-		properties: {},
+	const config = readConfig(processorId);
+	const posthog = createClient(config);
+	const metrics = new Metrics(posthog, { provider: config.provider });
+	const sampler = createProcessSampler(metrics, config.sampleIntervalMs);
+
+	state = {
+		config,
+		posthog,
+		metrics,
+		sampler,
+		zeroOutput: createZeroOutputTracker(),
+		uninstallHooks: installProcessHooks(async (reason) => {
+			captureException(reason, { fatal: true });
+			try {
+				await Promise.race([shutdownMonitoring(), setTimeout(FATAL_SHUTDOWN_TIMEOUT_MS)]);
+			} finally {
+				process.exit(1);
+			}
+		}),
 	};
+
+	sampler.start();
 }
 
-export function initMonitoring(id: string): void {
-	processorId = id;
-	healthIntervalMs = DEFAULT_HEALTH_INTERVAL_MS;
-	aggregate = emptyAggregate();
-	hasPublishedBefore = false;
-	consecutiveZeroPublishedCycles = 0;
-	posthog = undefined;
-
-	const intervalOverride = Number(process.env.MONITORING_HEALTH_INTERVAL_MS);
-	if (Number.isFinite(intervalOverride) && intervalOverride > 0) {
-		healthIntervalMs = intervalOverride;
-	}
-
-	const key = process.env.POSTHOG_KEY;
-	if (!key) return;
-
-	posthog = new PostHog(key, {
-		host: process.env.POSTHOG_HOST,
-		flushAt: 1,
-		flushInterval: 0,
-	});
-
-	process.on("unhandledRejection", (reason) => {
-		captureException(reason);
-	});
-	process.on("uncaughtException", (error) => {
-		captureException(error);
-	});
+export function captureEvent(event: string, properties?: Record<string, unknown>): void {
+	if (state === undefined) return;
+	captureEventWith(state.posthog, state.config.processorId, event, properties);
 }
 
 export function captureException(error: unknown, properties?: Record<string, unknown>): void {
-	if (!posthog) return;
-	const err = error instanceof Error ? error : new Error(String(error));
-	posthog.captureException(err, processorId, properties);
+	if (state === undefined) return;
+	captureExceptionWith(state.posthog, state.config.processorId, error, properties);
 }
 
-/** Machine telemetry, not user analytics: always sent with person-profile processing disabled. */
-export function captureEvent(event: string, properties?: Record<string, unknown>): void {
-	if (!posthog) return;
-	posthog.capture({
-		distinctId: processorId,
-		event,
-		properties: { ...properties, $process_person_profile: false },
-	});
+export function recordCycle(sample: CycleSample): void {
+	if (state === undefined) return;
+	const { metrics, zeroOutput } = state;
+
+	const outcome = sample.outcome ?? (sample.errors > 0 ? "error" : "success");
+	const phase = sample.phase;
+	const phased = phase !== undefined ? { phase } : undefined;
+	const attributed: MetricAttributes = phase !== undefined ? { outcome, phase } : { outcome };
+
+	metrics.count(METRICS.cycleCount, 1, attributed);
+	metrics.histogram(METRICS.cycleDuration, sample.durationMs, "ms", phased);
+	if (sample.errors > 0) metrics.count(METRICS.cycleErrors, sample.errors, attributed);
+
+	// Une phase annexe (rafraîchissement de lignes) ne publie jamais rien : elle ne doit ni
+	// écraser la jauge de flotte du dernier cycle nominal, ni compter comme un silence.
+	if (phase !== undefined) return;
+
+	// Un cycle en échec ne publie rien : écraser la jauge de flotte avec ses zéros la ferait
+	// tomber au moment précis où on la consulte. Le compteur de cycles en erreur et la série de
+	// cycles vides disent déjà la panne, la jauge conserve donc le dernier parc connu.
+	const publishedTotal = totalPositionTypeCounts(sample.published);
+	const failedWithoutOutput = publishedTotal === 0 && sample.errors > 0;
+
+	for (const positionType of positionTypes) {
+		const published = sample.published[positionType];
+		if (published > 0) metrics.count(METRICS.journeysPublished, published, { position_type: positionType });
+		if (!failedWithoutOutput) metrics.gauge(METRICS.vehiclesActive, published, { position_type: positionType });
+	}
+
+	const { streak, shouldAlert } = zeroOutput.observe(publishedTotal);
+	metrics.gauge(METRICS.zeroOutputStreak, streak);
+	if (shouldAlert) captureEvent("provider_zero_output", { consecutiveCycles: streak });
 }
 
 /**
- * Cheap, synchronous, meant to be called once per loop iteration by every provider. Aggregates
- * in-process and only calls out to PostHog on a fixed wall-clock interval (`provider_health`), or
- * immediately once output silently drops to zero for `ZERO_OUTPUT_THRESHOLD` consecutive cycles
- * (`provider_zero_output`) — see the volume/cost analysis in the implementation plan for why.
+ * Arrête l'échantillonneur puis vide les files PostHog. À `await` sur tous les chemins de sortie.
+ *
+ * Ne rejette jamais : c'est le seul nettoyage garanti des sorties de processus, et ses appelants
+ * sont des chemins de terminaison qui ne peuvent rien faire d'un échec sinon l'ignorer. Chaque
+ * étape est isolée pour qu'un premier échec ne prive pas les suivantes de leur exécution — sans
+ * quoi un `uninstallHooks` en erreur laisserait le timer courir et perdrait la file en attente.
  */
-export function recordCycle(sample: CycleSample): void {
-	aggregate.cycles += 1;
-	aggregate.totalDurationMs += sample.durationMs;
-	aggregate.maxDurationMs = Math.max(aggregate.maxDurationMs, sample.durationMs);
-	aggregate.totalPublished += sample.published;
-	aggregate.totalErrors += sample.errors;
-	if (sample.timedOut) aggregate.timeouts += 1;
-	if (sample.properties) Object.assign(aggregate.properties, sample.properties);
+export async function shutdownMonitoring(): Promise<void> {
+	if (state === undefined) return;
+	const { sampler, posthog, uninstallHooks } = state;
+	state = undefined;
 
-	if (sample.published > 0) {
-		hasPublishedBefore = true;
-		consecutiveZeroPublishedCycles = 0;
-	} else {
-		consecutiveZeroPublishedCycles += 1;
-		if (hasPublishedBefore && consecutiveZeroPublishedCycles === ZERO_OUTPUT_THRESHOLD) {
-			captureEvent("provider_zero_output", { consecutiveCycles: consecutiveZeroPublishedCycles });
+	for (const step of [uninstallHooks, () => sampler.stop(), () => posthog?.shutdown()]) {
+		try {
+			await step();
+		} catch (error) {
+			console.error("Failed to shut down monitoring cleanly", error);
 		}
 	}
-
-	const now = Date.now();
-	if (now - aggregate.windowStartedAt >= healthIntervalMs) {
-		flushHealth(now);
-	}
-}
-
-function flushHealth(now: number): void {
-	const { cycles, totalDurationMs, maxDurationMs, totalPublished, totalErrors, timeouts, windowStartedAt, properties } =
-		aggregate;
-	aggregate = emptyAggregate();
-
-	if (cycles === 0) return;
-
-	captureEvent("provider_health", {
-		cycles,
-		avgDurationMs: Math.round(totalDurationMs / cycles),
-		maxDurationMs,
-		totalPublished,
-		totalErrors,
-		timeouts,
-		windowMs: now - windowStartedAt,
-		...properties,
-	});
-}
-
-export async function shutdownMonitoring(): Promise<void> {
-	await posthog?.shutdown();
 }

@@ -1,7 +1,18 @@
 import "dotenv";
 
 import { setTimeout } from "node:timers/promises";
-import { captureEvent, captureException, initMonitoring, recordCycle, shutdownMonitoring } from "@bus-tracker/monitoring";
+import {
+	addPositionTypeCounts,
+	captureEvent,
+	captureException,
+	countPositionTypes,
+	emptyPositionTypeCounts,
+	initMonitoring,
+	type PositionTypeCounts,
+	recordCycle,
+	shutdownMonitoring,
+	totalPositionTypeCounts,
+} from "@bus-tracker/monitoring";
 import { Cron } from "croner";
 import DraftLog from "draftlog";
 import pLimit from "p-limit";
@@ -70,7 +81,7 @@ while (true) {
 	}
 
 	const startedAt = Date.now();
-	let cycleResult = { publishedCount: 0, errorCount: 0 };
+	let cycleResult = { published: emptyPositionTypeCounts(), errorCount: 0 };
 	try {
 		let timedOut = false;
 
@@ -79,7 +90,7 @@ while (true) {
 				cycleResult = result;
 			}),
 			(async () => {
-				await setTimeout(30_000);
+				await setTimeout(120_000);
 				timedOut = true;
 			})(),
 		]);
@@ -87,15 +98,26 @@ while (true) {
 		if (timedOut) {
 			console.error("Time out when computing journeys, restarting processor.");
 			captureException(new Error("Timeout computing journeys"));
-			await shutdownMonitoring();
-			process.exit(1);
+			recordCycle({
+				durationMs: Date.now() - startedAt,
+				published: emptyPositionTypeCounts(),
+				errors: 1,
+				outcome: "timeout",
+			});
+			// `finally` : sans lui, un échec du vidage tomberait dans le `catch` du cycle et la
+			// boucle repartirait avec le monitoring déjà démonté, sans jamais être redémarrée.
+			try {
+				await shutdownMonitoring();
+			} finally {
+				process.exit(1);
+			}
 		}
 	} catch (e) {
 		console.error("Failed to compute current journeys", e);
 		captureException(e);
 	}
 	const computeDuration = Date.now() - startedAt;
-	recordCycle({ durationMs: computeDuration, published: cycleResult.publishedCount, errors: cycleResult.errorCount });
+	recordCycle({ durationMs: computeDuration, published: cycleResult.published, errors: cycleResult.errorCount });
 
 	await publishDataSourceManifests(redis, configuration.id, configuration.sources);
 
@@ -107,7 +129,7 @@ while (true) {
 	} catch {}
 }
 
-async function computeCurrentJourneys(): Promise<{ publishedCount: number; errorCount: number }> {
+async function computeCurrentJourneys(): Promise<{ published: PositionTypeCounts; errorCount: number }> {
 	const watch = createStopWatch();
 
 	const computeLimit = 6;
@@ -118,7 +140,7 @@ async function computeCurrentJourneys(): Promise<{ publishedCount: number; error
 		const computationResults = await Promise.allSettled(
 			configuration.sources.map((source) =>
 				computeLimitFn(async () => {
-					if (source.gtfs === undefined) return 0;
+					if (source.gtfs === undefined) return emptyPositionTypeCounts();
 					const { journeys, paths } = await computeVehicleJourneys(source);
 
 					for (const journey of journeys) {
@@ -136,12 +158,12 @@ async function computeCurrentJourneys(): Promise<{ publishedCount: number; error
 
 					await refreshLinePathTtls(source);
 
-					return journeys.length;
+					return countPositionTypes(journeys);
 				}),
 			),
 		);
 
-		let computedJourneyCount = 0;
+		let published = emptyPositionTypeCounts();
 		let errorCount = 0;
 		for (const computationResult of computationResults) {
 			if (computationResult.status === "rejected") {
@@ -150,18 +172,18 @@ async function computeCurrentJourneys(): Promise<{ publishedCount: number; error
 				errorCount += 1;
 				continue;
 			}
-			computedJourneyCount += computationResult.value;
+			published = addPositionTypeCounts(published, computationResult.value);
 		}
 
 		updateLog(
 			"%s ✓ Published %d vehicle journey entries in %dms.",
 			Temporal.Now.instant(),
-			computedJourneyCount,
+			totalPositionTypeCounts(published),
 			watch.total(),
 		);
 
 		console.log();
-		return { publishedCount: computedJourneyCount, errorCount };
+		return { published, errorCount };
 	} catch (e) {
 		updateLog("%s ✘ Something wrong occurred while publishing vehicle journeys.", Temporal.Now.instant());
 		console.error(e);
@@ -169,7 +191,7 @@ async function computeCurrentJourneys(): Promise<{ publishedCount: number; error
 	}
 
 	console.log();
-	return { publishedCount: 0, errorCount: 1 };
+	return { published: emptyPositionTypeCounts(), errorCount: 1 };
 }
 
 async function publishLinePaths(sources: typeof configuration.sources) {

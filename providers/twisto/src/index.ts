@@ -1,5 +1,12 @@
 import { setTimeout } from "node:timers/promises";
-import { captureEvent, captureException, initMonitoring, recordCycle } from "@bus-tracker/monitoring";
+import {
+	captureEvent,
+	captureException,
+	countPositionTypes,
+	emptyPositionTypeCounts,
+	initMonitoring,
+	recordCycle,
+} from "@bus-tracker/monitoring";
 import { createClient } from "redis";
 
 import { fetchMonitoredLines } from "./jobs/fetch-monitored-lines.js";
@@ -38,7 +45,7 @@ while (true) {
 		} catch (cause) {
 			console.error("%s ✘ Failed to update monitored lines", Temporal.Now.instant(), cause);
 			captureException(cause);
-			recordCycle({ durationMs: Date.now() - cycleStartedAt, published: 0, errors: 1 });
+			recordCycle({ durationMs: Date.now() - cycleStartedAt, published: emptyPositionTypeCounts(), errors: 1 });
 		}
 		await setTimeout(60_000);
 
@@ -52,6 +59,10 @@ while (true) {
 	const vehicleJourneys = await fetchMonitoredVehicles(monitoredLines);
 	await redis.publish(channel, JSON.stringify(vehicleJourneys));
 	console.log("%s ✓ Sent %d vehicle journeys.", Temporal.Now.instant(), vehicleJourneys.length);
-	recordCycle({ durationMs: Date.now() - cycleStartedAt, published: vehicleJourneys.length, errors: 0 });
+	recordCycle({
+		durationMs: Date.now() - cycleStartedAt,
+		published: countPositionTypes(vehicleJourneys),
+		errors: 0,
+	});
 	await setTimeout(60_000);
 }
