@@ -1,3 +1,4 @@
+import { emptyPositionTypeCounts } from "@bus-tracker/monitoring";
 import { describe, expect, it } from "vitest";
 
 import type { Configuration } from "./configuration/configuration.js";
@@ -22,7 +23,7 @@ function makeConfiguration(): Configuration {
 
 function makePublisher(): Publisher {
 	return {
-		publishJourneys: async () => 0,
+		publishJourneys: async () => emptyPositionTypeCounts(),
 		publishShapes: async () => {},
 		resetKeyRegistry: () => {},
 	};

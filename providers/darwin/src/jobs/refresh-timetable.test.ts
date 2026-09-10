@@ -1,3 +1,4 @@
+import { emptyPositionTypeCounts } from "@bus-tracker/monitoring";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./load-resources.js", () => ({ loadResources: vi.fn(async () => {}) }));
@@ -30,7 +31,7 @@ function makeConfiguration(): Configuration {
 
 function noopPublisher(): Publisher {
 	return {
-		publishJourneys: async () => 0,
+		publishJourneys: async () => emptyPositionTypeCounts(),
 		publishShapes: async () => {},
 		resetKeyRegistry: () => {},
 	};

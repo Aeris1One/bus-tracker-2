@@ -1,4 +1,5 @@
 import type { VehicleJourney } from "@bus-tracker/contracts";
+import { totalPositionTypeCounts } from "@bus-tracker/monitoring";
 import { describe, expect, it } from "vitest";
 
 import { PUBLISH_CHUNK_SIZE } from "../constants.js";
@@ -67,9 +68,9 @@ describe("createPublisher — publishJourneys", () => {
 		const { redis, published } = makeRedisDouble();
 		const publisher = createPublisher(redis, "journeys", createCounters());
 
-		const count = await publisher.publishJourneys([]);
+		const counts = await publisher.publishJourneys([]);
 
-		expect(count).toBe(0);
+		expect(totalPositionTypeCounts(counts)).toBe(0);
 		expect(published).toHaveLength(0);
 	});
 
@@ -80,9 +81,9 @@ describe("createPublisher — publishJourneys", () => {
 			makeJourney({ id: `NR:UNKNOWN:ServiceJourney:R${index}` }),
 		);
 
-		const count = await publisher.publishJourneys(journeys);
+		const counts = await publisher.publishJourneys(journeys);
 
-		expect(count).toBe(PUBLISH_CHUNK_SIZE + 1);
+		expect(totalPositionTypeCounts(counts)).toBe(PUBLISH_CHUNK_SIZE + 1);
 		expect(published).toHaveLength(2);
 		expect(JSON.parse(published[0]?.message ?? "[]")).toHaveLength(PUBLISH_CHUNK_SIZE);
 		expect(JSON.parse(published[1]?.message ?? "[]")).toHaveLength(1);
@@ -97,9 +98,9 @@ describe("createPublisher — publishJourneys", () => {
 		const invalid = { ...makeJourney(), id: undefined } as unknown as VehicleJourney;
 		const valid = makeJourney({ id: "NR:UNKNOWN:ServiceJourney:VALID" });
 
-		const count = await publisher.publishJourneys([invalid, valid]);
+		const counts = await publisher.publishJourneys([invalid, valid]);
 
-		expect(count).toBe(1);
+		expect(totalPositionTypeCounts(counts)).toBe(1);
 		expect(counters.get("publish:invalid")).toBe(1);
 		expect(published).toHaveLength(1);
 		expect(JSON.parse(published[0]?.message ?? "[]")).toHaveLength(1);
@@ -110,9 +111,9 @@ describe("createPublisher — publishJourneys", () => {
 		const publisher = createPublisher(redis, "journeys", createCounters());
 		const invalid = { ...makeJourney(), id: undefined } as unknown as VehicleJourney;
 
-		const count = await publisher.publishJourneys([invalid]);
+		const counts = await publisher.publishJourneys([invalid]);
 
-		expect(count).toBe(0);
+		expect(totalPositionTypeCounts(counts)).toBe(0);
 		expect(published).toHaveLength(0);
 	});
 });

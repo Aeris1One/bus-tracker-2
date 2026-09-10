@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
+import { emptyPositionTypeCounts } from "@bus-tracker/monitoring";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ObjectStore } from "../bucket/object-store.js";
 import type { Configuration } from "../configuration/configuration.js";
@@ -90,7 +91,7 @@ type SpyingPublisher = Publisher & { resetCount: number };
 function makePublisher(): SpyingPublisher {
 	return {
 		resetCount: 0,
-		publishJourneys: async () => 0,
+		publishJourneys: async () => emptyPositionTypeCounts(),
 		publishShapes: async () => {},
 		resetKeyRegistry() {
 			this.resetCount += 1;

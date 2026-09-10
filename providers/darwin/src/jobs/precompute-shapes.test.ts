@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { emptyPositionTypeCounts } from "@bus-tracker/monitoring";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { Configuration } from "../configuration/configuration.js";
@@ -29,7 +30,7 @@ function makeConfiguration(): Configuration {
 
 function noopPublisher(): Publisher {
 	return {
-		publishJourneys: async () => 0,
+		publishJourneys: async () => emptyPositionTypeCounts(),
 		publishShapes: async () => {},
 		resetKeyRegistry: () => {},
 	};

@@ -1,3 +1,4 @@
+import { emptyPositionTypeCounts } from "@bus-tracker/monitoring";
 import { describe, expect, it } from "vitest";
 import type { Configuration } from "../../configuration/configuration.js";
 import { createContext } from "../../context.js";
@@ -62,7 +63,7 @@ function makeEnvelope(overrides: Partial<Envelope> = {}): Envelope {
 /** `Publisher` (L11) est concret : ces tests portent sur les handlers, jamais sur la
  * publication elle-même ; un double neutre suffit à satisfaire le type. */
 const noopPublisher: Publisher = {
-	publishJourneys: async () => 0,
+	publishJourneys: async () => emptyPositionTypeCounts(),
 	publishShapes: async () => {},
 	resetKeyRegistry: () => {},
 };

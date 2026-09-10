@@ -7,6 +7,7 @@ import { setTimeout } from "node:timers/promises";
 import {
 	captureEvent,
 	captureException,
+	emptyPositionTypeCounts,
 	initMonitoring,
 	recordCycle,
 	shutdownMonitoring,
@@ -118,7 +119,7 @@ while (!stopping) {
 
 	// Publication, watchdog de 30 s
 	const cycleStartedAtMs = Date.now();
-	let cycleResult = { publishedCount: 0, errorCount: 0 };
+	let cycleResult = { published: emptyPositionTypeCounts(), errorCount: 0 };
 	try {
 		let timedOut = false;
 		await Promise.race([
@@ -142,7 +143,7 @@ while (!stopping) {
 		captureException(error);
 	}
 	const cycleDurationMs = Date.now() - cycleStartedAtMs;
-	recordCycle({ durationMs: cycleDurationMs, published: cycleResult.publishedCount, errors: cycleResult.errorCount });
+	recordCycle({ durationMs: cycleDurationMs, published: cycleResult.published, errors: cycleResult.errorCount });
 
 	// Contrôle qualité des tracés
 	checkShapeQuality(context.counters);

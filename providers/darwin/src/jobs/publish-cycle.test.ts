@@ -1,4 +1,5 @@
 import type { VehicleJourney } from "@bus-tracker/contracts";
+import { countPositionTypes, type PositionTypeCounts } from "@bus-tracker/monitoring";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../publish/build-journey.js", () => ({ buildJourney: vi.fn() }));
@@ -72,7 +73,7 @@ function makeShape(redisKey: string): Shape {
 
 type CapturingPublisher = Publisher & { journeysCalls: VehicleJourney[][]; shapesCalls: Shape[][] };
 
-function makePublisher(publishedCount?: (journeys: VehicleJourney[]) => number): CapturingPublisher {
+function makePublisher(published?: (journeys: VehicleJourney[]) => PositionTypeCounts): CapturingPublisher {
 	const journeysCalls: VehicleJourney[][] = [];
 	const shapesCalls: Shape[][] = [];
 	return {
@@ -80,7 +81,7 @@ function makePublisher(publishedCount?: (journeys: VehicleJourney[]) => number):
 		shapesCalls,
 		async publishJourneys(journeys) {
 			journeysCalls.push(journeys);
-			return publishedCount ? publishedCount(journeys) : journeys.length;
+			return published ? published(journeys) : countPositionTypes(journeys);
 		},
 		async publishShapes(shapes) {
 			shapesCalls.push([...shapes]);

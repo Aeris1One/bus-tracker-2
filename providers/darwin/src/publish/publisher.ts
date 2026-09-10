@@ -2,6 +2,7 @@
 
 import type { VehicleJourney } from "@bus-tracker/contracts";
 import { vehicleJourneySchema } from "@bus-tracker/contracts";
+import { countPositionTypes, type PositionTypeCounts } from "@bus-tracker/monitoring";
 import { type } from "arktype";
 
 import { PUBLISH_CHUNK_SIZE, SHAPE_KEY_REGISTRY_TTL_MS } from "../constants.js";
@@ -21,7 +22,7 @@ export type RedisClient = {
 };
 
 export type Publisher = {
-	publishJourneys(journeys: VehicleJourney[]): Promise<number>;
+	publishJourneys(journeys: VehicleJourney[]): Promise<PositionTypeCounts>;
 	publishShapes(shapes: Iterable<Shape>, nowMs: number): Promise<void>;
 	resetKeyRegistry(): void;
 };
@@ -55,7 +56,7 @@ export function createPublisher(redis: RedisClient, channel: string, counters: C
 				await redis.publish(channel, JSON.stringify(chunk));
 			}
 
-			return valid.length;
+			return countPositionTypes(valid);
 		},
 
 		async publishShapes(shapes, nowMs) {
@@ -65,7 +66,7 @@ export function createPublisher(redis: RedisClient, channel: string, counters: C
 			for (const shape of shapes) {
 				if (publishedKeys.shouldWrite(shape.redisKey, nowMs)) {
 					toWrite.push(shape);
-				} 
+				}
 			}
 
 			if (toWrite.length > 0) {
