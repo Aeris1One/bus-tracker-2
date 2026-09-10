@@ -101,7 +101,7 @@ export function recordCycle(sample: CycleSample): void {
 	const failedWithoutOutput = publishedTotal === 0 && sample.errors > 0;
 
 	for (const positionType of positionTypes) {
-		const published = sample.published[positionType];
+		const published = sample.published[positionType] ?? 0;
 		if (published > 0) metrics.count(METRICS.journeysPublished, published, { position_type: positionType });
 		if (!failedWithoutOutput) metrics.gauge(METRICS.vehiclesActive, published, { position_type: positionType });
 	}
