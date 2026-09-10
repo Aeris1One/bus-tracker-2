@@ -90,7 +90,7 @@ while (true) {
 				cycleResult = result;
 			}),
 			(async () => {
-				await setTimeout(120_000);
+				await setTimeout(30_000);
 				timedOut = true;
 			})(),
 		]);
