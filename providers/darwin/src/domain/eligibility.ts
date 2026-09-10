@@ -56,10 +56,12 @@ export function evaluateTrain(
 		return { rejectedBecause: "IRRELEVANT_SERVICE_DATE" };
 	}
 
-	// Pré-départ
+	// Pré-départ. Heure effective (théorique publique, à défaut théorique de travail) : un train ECS
+	// n'a jamais d'heure publique, seulement de travail — s'en tenir au seul public le laisserait
+	// toujours passer, quelle que soit son heure de départ réelle.
 	const firstCall = train.calls[0];
 	if (firstCall !== undefined) {
-		const firstTime = firstCall.aimedPublicDeparture ?? firstCall.aimedPublicArrival;
+		const firstTime = effectiveDeparture(firstCall) ?? effectiveArrival(firstCall);
 		if (firstTime !== undefined && firstTime > nowMs + options.showDeparturesWithinMs) {
 			return { rejectedBecause: "TOO_EARLY" };
 		}
