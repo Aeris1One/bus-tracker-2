@@ -12,7 +12,7 @@ export async function downloadGtfs(source: Source, outputDirectory: string) {
 			"User-Agent": USER_AGENT,
 			...getAuthHeaders(source.options.staticAuth ?? source.options.auth),
 		},
-		signal: AbortSignal.timeout(30_000),
+		signal: AbortSignal.timeout(120_000),
 	});
 
 	if (!response.ok) {
